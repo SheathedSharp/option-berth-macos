@@ -1,0 +1,57 @@
+name: macOS client
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: client-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - name: Build the Swift package
+        run: swift build --package-path . --force-resolved-versions
+      - name: Run the isolated native checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary_dir=$(swift build --package-path . --show-bin-path)
+          isolation=$(mktemp -d)
+          mkdir -p "$isolation/home" "$isolation/berth"
+          trap 'rm -rf "$isolation"' EXIT
+          HOME="$isolation/home" CFFIXED_USER_HOME="$isolation/home" \
+            BERTH_HOME="$isolation/berth" "$binary_dir/ClientChecks"
+      - name: Check relative documentation links
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, re, sys
+          root = os.getcwd()
+          broken = []
+          for directory, dirs, files in os.walk(root):
+              dirs[:] = [d for d in dirs if d not in (".git", ".build", ".cache")]
+              for name in files:
+                  if not name.endswith(".md"):
+                      continue
+                  path = os.path.join(directory, name)
+                  for number, line in enumerate(open(path, encoding="utf-8"), 1):
+                      for match in re.finditer(r"\]\(([^)\s]+)\)", line):
+                          target = match.group(1)
+                          if target.startswith(("http://", "https://", "mailto:", "#")):
+                              continue
+                          target = target.split("#")[0]
+                          if target and not os.path.exists(os.path.normpath(os.path.join(directory, target))):
+                              broken.append(f"{os.path.relpath(path, root)}:{number} -> {match.group(1)}")
+          for entry in broken:
+              print(entry, file=sys.stderr)
+          sys.exit(1 if broken else 0)
+          PY
