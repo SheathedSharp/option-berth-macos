@@ -3,7 +3,17 @@
 客户端围绕一个 worktree 呈现服务、Git、终端与外部 coding agent 会话，
 并提供启动、停止、日志和清单编辑入口。
 左栏只列出已经发现 oberth.yaml 的项目；监听情况跟在服务运行实况里，不是整机端口列表。
-产品边界和 CLI 契约见 ../../docs/product.md 与 ../../docs/cli.md。
+产品边界和 CLI 契约见 https://github.com/SheathedSharp/option-berth/blob/main/docs/product.md 与 https://github.com/SheathedSharp/option-berth/blob/main/docs/cli.md。
+
+## 三个产品
+
+option-berth 是三个独立产品，共用一份 CLI 契约：**引擎**（`oberth`，声明与起停服务）、
+**本仓库的 macOS 客户端**（呈现同一份事实）、以及
+[coding agent 的 skill](https://github.com/SheathedSharp/option-berth-skill)（教 agent 读同一份事实并交接工作）。
+三者互不复制运行状态；客户端通过 `BERTH_BIN` 指向任意一份 `oberth`。
+
+控制台、安装、个性化配置与 Git 审查的契约文档在 [docs/](docs/) 里；
+CLI、RPC 与清单字段以 [引擎仓库](https://github.com/SheathedSharp/option-berth) 为准。
 
 ## 构建和运行
 
