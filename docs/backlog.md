@@ -20,7 +20,7 @@ CLI 与 JSON 契约见 [cli.md](https://github.com/SheathedSharp/option-berth/bl
 
 有限 CLI 读取已有独立进程组、取消时限、双流结束和真实回收验证。切换 worktree/文件会
 取消失效请求；草稿候选只有在命令成功退出后才回填，关闭窗口后不接收旧结果。完整边界见
-[README](README.md)，回归入口见 [validation.md](validation.md)。
+[README](../README.md)，回归入口见 [validation.md](validation.md)。
 
 Paper 是唯一内置默认；主题、快捷键、新会话默认值与各模块宽度已文件化，错误编辑保留有效值。
 Cmd+N 接入项目，Cmd+1…9 按可见 Worktrees 导航，模块采用 Option+Cmd+S/G/T。Git 提供冲突/暂存/工作区/
