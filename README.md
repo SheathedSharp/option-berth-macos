@@ -15,32 +15,24 @@ option-berth 是三个独立产品，共用一份 CLI 契约：**引擎**（`obe
 控制台、安装、个性化配置与 Git 审查的契约文档在 [docs/](docs/) 里；
 CLI、RPC 与清单字段以 [引擎仓库](https://github.com/SheathedSharp/option-berth) 为准。
 
-## 构建和运行
+## 当前没有可下载的签名包
 
-在仓库根目录：
+这个仓库还没有 Developer ID 签名、也没有经过 Apple 公证的 Release，没有可下载的 DMG。
+自行构建的包只做 ad-hoc 签名，不要把它当成已公证的安装包，也不要为此关闭 Gatekeeper。
 
-~~~sh
-mage build          # 引擎、客户端和 Jev adapter
-mage buildClient    # 只构建客户端
-mage runApp        # 安装到 /Applications 后打开同一份 App
-mage runCLI "version --json"  # 运行刚构建的 CLI
-mage runDaemon     # 用刚构建的 CLI 启动后台采集器
-mage stop           # 停止 daemon
-mage install        # 安装 CLI、App，并把 ~/.local/bin 写进 PATH
-~~~
-
-开发构建和运行统一由 Mage 管理。
-
-只改客户端时：
+在仓库根目录构建：
 
 ~~~sh
-cd client/macos
 VERSION=0.1.0 ./build.sh
 ./build.sh --run
 ~~~
 
+`VERSION` 写进应用的版本号；本仓库没有单独的版本文件。构建结果在 `build/OptionBerth.app`。
+引擎 CLI 另行安装，见 [option-berth 的安装说明](https://github.com/SheathedSharp/option-berth/blob/main/docs/install.md)。
+客户端用 `BERTH_BIN` 指向那份 `oberth`。
+
 窗口关闭不会停止 daemon。daemon 的 socket、数据库和日志都在
-~/.option-berth/；oberth daemon path 会打印当前路径。
+~/.option-berth/；`oberth daemon path` 会打印当前路径。
 
 ## 界面
 
@@ -70,20 +62,20 @@ Paper（纸张）是唯一内置默认。设置 → 外观通过内置原生编�
 ./build/OptionBerth.app/Contents/MacOS/OptionBerth --probe
 
 # 当前机器的实况截图
-mage snapshot
+./build/OptionBerth.app/Contents/MacOS/OptionBerth --snapshot .cache/board.png
 
 # 冻结数据的全部界面状态
-mage states
+./build/OptionBerth.app/Contents/MacOS/OptionBerth --render-states .cache/states
 
 # 真实窗口几何和截图
-mage window
+./build/OptionBerth.app/Contents/MacOS/OptionBerth --dump-window .cache/window.png
 ~~~
 
-截图前先执行 `mage client` 或 `mage buildClient`；截图目标不再隐式构建。
+截图前先执行 `./build.sh`；截图目标不再隐式构建。
 
-mage states 生成 01-empty、02-services-live、03-services-idle、04-runtime-facts、
-05-connection-error、06-manifest-review、07-settings、07-settings-jev、07-settings-typography 、08-code、08-code-history、09-terminal 、10-agent-console 和 11-console-split。改界面后必须运行 mage states
-并查看 PNG；需要验证真实 daemon 数据时再运行 mage snapshot。mage window 用于检查标题栏、
+`OptionBerth --render-states` 生成 01-empty、02-services-live、03-services-idle、04-runtime-facts、
+05-connection-error、06-manifest-review、07-settings、07-settings-jev、07-settings-typography 、08-code、08-code-history、09-terminal 、10-agent-console 和 11-console-split。改界面后必须运行它
+并查看 PNG；需要验证真实 daemon 数据时再用 `--snapshot`。`--dump-window` 用于检查标题栏、
 弹窗和窗口尺寸等离屏渲染看不到的部分。
 
 也可以直接指定状态或尺寸：
@@ -117,7 +109,7 @@ schema，再重新构建客户端。
 - 端口号按标识符显示，不使用千位分隔符。
 - 服务空态、未运行、连接失败、清单预览和设置窗口都有明确的下一步动作。
 - ImageRenderer 看不到 ScrollView 和独立窗口；冻结状态与真实窗口各自验证。
-- 弹窗打开时用 mage window 检查其实际尺寸和位置。
+- 弹窗打开时用 `--dump-window` 检查其实际尺寸和位置。
 
 ## 原生终端 / Native terminal
 
