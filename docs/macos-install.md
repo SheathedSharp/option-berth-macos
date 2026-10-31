@@ -1,5 +1,7 @@
 # macOS 安装与替换 / Install and replace
 
+当前仓库没有公开发布的 DMG。下面是签名发布之后的安装方式；现在按仓库 README 在本机自行构建。
+
 新客户端分发格式为 `OptionBerth-v<版本>-macos-arm64-adhoc.dmg`。
 `notarized.dmg` 只用于应用和外层镜像均经过显式 Developer ID 签名、Apple 公证与验收的构建。
 DMG 只是安装容器，不使 ad-hoc 签名变成 Apple 信任的签名；不要关闭 Gatekeeper。
