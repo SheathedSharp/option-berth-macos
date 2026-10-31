@@ -11,7 +11,8 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-repo="$(cd "$here/../.." && pwd)"
+# 脚本在仓库根目录。许可、可选的 VERSION 和 git 身份都从这里取。
+repo="$here"
 out="$here/build"
 app="$out/OptionBerth.app"
 version="${VERSION:-}"
