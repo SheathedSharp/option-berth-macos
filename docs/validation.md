@@ -1,7 +1,7 @@
 # 客户端验证范围
 
 本文件只是 macOS 客户端的验证范围。引擎的验证范围在
-[引擎仓库的 validation.md](https://github.com/SheathedSharp/option-berth/blob/main/docs/validation.md)；
+[引擎仓库的 validation.md](https://github.com/SheathedSharp/option-berth/blob/main/docs/agent/validation.md)；
 两者共用一条事实链，但各自的检查只证明各自的东西。
 
 客户端命令一律在本仓库根目录执行（这里就是 Swift 包的根）。冻结渲染、
