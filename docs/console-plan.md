@@ -1,6 +1,6 @@
 # 会话工作台改造计划
 
-> 状态：发版前（2026-10-15）。阶段 0–5 **实现**已并入 `main`（契约见 [console.md](console.md)；合成回归 `bash scripts/run_console_validation.sh`）。**剩余**：真机/IME/复杂提示符手测（见 [validation.md](https://github.com/SheathedSharp/option-berth/blob/main/docs/validation.md)「建议步骤」与记录表）、`mage states` 全量 PNG 人工目检、本文滚动删减。
+> 状态：发版前（2026-10-15）。阶段 0–5 **实现**已并入 `main`（契约见 [console.md](console.md)；合成回归 `bash scripts/run_console_validation.sh`）。**剩余**：真机/IME/复杂提示符手测（见 [validation.md](https://github.com/SheathedSharp/option-berth/blob/main/docs/agent/validation.md)「建议步骤」与记录表）、`mage states` 全量 PNG 人工目检、本文滚动删减。
 > 已确认的决定：Agent 默认走 provider 自己的结构化 stdio 协议，审批请求在会话页由人决定；
 > 支持的 Shell（zsh/bash/fish）上新会话默认开启集成（`settings.json` 可关）。
 > 每完成一个阶段，把对应内容并入 [console.md](console.md)、[cli.md](https://github.com/SheathedSharp/option-berth/blob/main/docs/cli.md)、[product.md](https://github.com/SheathedSharp/option-berth/blob/main/docs/product.md)，
@@ -536,8 +536,8 @@ Codex
 
 **仍未关闭（发版前，不能由合成测试代替）**
 
-- [validation.md](https://github.com/SheathedSharp/option-berth/blob/main/docs/validation.md) **控制台手测**表：真机 Codex/Claude、IME、复杂提示符；可选系统通知。
-- `mage states`：2026-10-15 已生成/刷新 `client/macos/.cache/states/`（含 `10-console-*`、`11-console-split`）；**全量 PNG 须人工逐张翻看**（见 [validation.md](https://github.com/SheathedSharp/option-berth/blob/main/docs/validation.md) 手测表）。`mage window` 同日已生成 `client/macos/.cache/window.png`。
+- [validation.md](https://github.com/SheathedSharp/option-berth/blob/main/docs/agent/validation.md) **控制台手测**表：真机 Codex/Claude、IME、复杂提示符；可选系统通知。
+- `mage states`：2026-10-15 已生成/刷新 `client/macos/.cache/states/`（含 `10-console-*`、`11-console-split`）；**全量 PNG 须人工逐张翻看**（见 [validation.md](https://github.com/SheathedSharp/option-berth/blob/main/docs/agent/validation.md) 手测表）。`mage window` 同日已生成 `client/macos/.cache/window.png`。
 
 ## 8. 验证与未覆盖范围
 
