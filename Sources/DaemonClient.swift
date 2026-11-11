@@ -98,6 +98,30 @@ struct DaemonClient: Sendable {
         }
     }
 
+    /// 「跑的是不是磁盘上现在的代码」—— 和 `oberth status` 同一组事实，
+    /// 由引擎在读到请求时重算，客户端不自己算指纹。
+    ///
+    /// 老 daemon 没有这个方法：调用会失败，调用方按「未知」处理即可 ——
+    /// 未知不是「没变」。
+    func codeFacts(group: String) throws -> [ServiceCodeFacts] {
+        let data = try call("groups.code", params: ["name": group],
+                            receiveTimeout: Self.codeFactsReceiveTimeout)
+        do {
+            let envelope = try JSONDecoder().decode(Envelope<CodeResult>.self, from: data)
+            return envelope.result?.services ?? []
+        } catch {
+            throw Failure.malformed(error.localizedDescription)
+        }
+    }
+
+    private struct CodeResult: Decodable {
+        let services: [ServiceCodeFacts]
+    }
+
+    /// 代码比较要读源码树。引擎那一边最多用 10 秒，这里留出一次重扫和调度
+    /// 抖动；比普通读调用长，比停进程短。
+    static let codeFactsReceiveTimeout = 20
+
     /// 起一个项目声明的服务。
     ///
     /// 流式：daemon 每处理完一个服务就推一条，所以界面上是**一个个亮起来**的，

@@ -256,6 +256,52 @@ struct ServiceExit: Decodable, Sendable {
     }
 }
 
+/// `groups.code` 的一行：一次运行启动时的代码身份，和磁盘上现在的源码比较。
+///
+/// **这是 CLI `status` 已经发布的那组事实**（`code_changed_since_start`、
+/// `code_changed_files`、`code_hint`），不是客户端自己算的。`changed` 为
+/// nil 表示未知（老运行没有快照、源码读不出来、`sources:` 改过），绝不能
+/// 当成「没变」。
+struct ServiceCodeFacts: Decodable, Sendable {
+    let name: String
+    let runID: String
+    /// 这次运行启动时的 HEAD（有提交才有）。
+    let codeHead: String?
+    let changed: Bool?
+    let changedFiles: Int?
+    /// 引擎给的可直接执行的重启命令。
+    let hint: String?
+
+    var isStale: Bool { changed == true }
+
+    private enum CodingKeys: String, CodingKey {
+        case name, changed, hint
+        case runID = "run_id"
+        case codeHead = "code_head"
+        case changedFiles = "code_changed_files"
+    }
+
+    init(name: String, runID: String, codeHead: String? = nil, changed: Bool? = nil,
+         changedFiles: Int? = nil, hint: String? = nil) {
+        self.name = name
+        self.runID = runID
+        self.codeHead = codeHead
+        self.changed = changed
+        self.changedFiles = changedFiles
+        self.hint = hint
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = (try? c.decode(String.self, forKey: .name)) ?? ""
+        runID = (try? c.decode(String.self, forKey: .runID)) ?? ""
+        codeHead = try? c.decodeIfPresent(String.self, forKey: .codeHead)
+        changed = try? c.decodeIfPresent(Bool.self, forKey: .changed)
+        changedFiles = try? c.decodeIfPresent(Int.self, forKey: .changedFiles)
+        hint = try? c.decodeIfPresent(String.self, forKey: .hint)
+    }
+}
+
 /// `runs.list` 的结果：还在跑的，和已经结束的。
 struct RunsSnapshot: Decodable, Sendable {
     let runs: [RunRecord]

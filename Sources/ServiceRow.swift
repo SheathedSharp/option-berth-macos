@@ -14,6 +14,10 @@ struct ServiceRow: View {
     let isFocused: Bool
     let isWorking: Bool
     let notice: String?
+    /// 这次运行和磁盘上现在的源码比较。nil 表示未知 —— 不显示「已变/未变」。
+    var code: ServiceCodeFacts? = nil
+    /// 冻结渲染里不要挂原生 tooltip：`ImageRenderer` 会把它画进图里。
+    var showsHelp: Bool = true
     let onFocus: () -> Void
     let onStart: () -> Void
     let onStop: () -> Void
@@ -41,7 +45,9 @@ struct ServiceRow: View {
     }
 
     /// Ops-workbench: attention rows keep CLI verbs visible (start/restart/stop).
-    private var showActions: Bool { hovering || isFocused || service.needsAttention }
+    private var showActions: Bool {
+        hovering || isFocused || service.needsAttention || (code?.isStale ?? false)
+    }
 
     private var commandText: String {
         if let notice, !notice.isEmpty { return notice }
@@ -79,6 +85,9 @@ struct ServiceRow: View {
             }()
             return (label, .warn)
         }
+        if let code, code.isStale {
+            return ("代码已变", .warn)
+        }
         if let health = service.healthStatus, health.status == "ok" {
             return ("就绪", .live)
         }
@@ -89,6 +98,31 @@ struct ServiceRow: View {
             return ("在跑", .live)
         }
         return ("未启动", .quiet)
+    }
+
+    /// 状态标签背后的证据。代码过期这一条来自引擎的 `groups.code`，和 CLI
+    /// `status` 的 `code_changed_since_start` 是同一组事实。
+    private var statusHelp: String? {
+        if service.manifestRuntimeMismatch {
+            return "清单改过，进程还是按旧清单起的；重启后生效"
+        }
+        // 标签优先显示健康和退出；那些原因在详情里有，这里不再抢一句话。
+        if let health = service.healthStatus, health.status != "ok" { return nil }
+        if service.lastExit != nil { return nil }
+        if let code, code.isStale {
+            var parts = ["这个进程跑的是旧代码"]
+            if let files = code.changedFiles, files > 0 {
+                parts.append("\(files) 个文件已改")
+            }
+            if let head = code.codeHead, !head.isEmpty {
+                parts.append("启动时 HEAD \(head.prefix(7))")
+            }
+            if let hint = code.hint, !hint.isEmpty {
+                parts.append(hint)
+            }
+            return parts.joined(separator: " · ")
+        }
+        return nil
     }
 
     var body: some View {
@@ -113,6 +147,7 @@ struct ServiceRow: View {
                 }
             }
             .frame(width: Col.status, alignment: .leading)
+            .modifier(HelpIfPresent(text: showsHelp ? statusHelp : nil))
 
             Text(verbatim: service.shownPort.map { "\($0)" } ?? "—")
                 .font(Face.mono(Metrics.chrome, .medium))
@@ -180,6 +215,21 @@ struct ServiceRow: View {
                     .fill(Ink.accent)
                     .frame(width: 2)
             }
+        }
+    }
+}
+
+
+/// 只在有内容时挂 help：空字符串会留下一个空 tooltip。
+private struct HelpIfPresent: ViewModifier {
+    let text: String?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let text, !text.isEmpty {
+            content.help(text)
+        } else {
+            content
         }
     }
 }

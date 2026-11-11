@@ -61,19 +61,21 @@ enum Snapshot {
         // Ops-workbench: focus an attention service so live freeze shows
         // Attention section + log binding (需重启), not only calm ready.
         let focus = ServiceRef(group: demo.name, service: "web")
+        let facts = frozenCodeFacts(group: demo.name)
 
         let states: [(String, BoardStore, ServicesStore, GitStore, Scope)] = [
             ("01-empty", BoardStore(fixture: []), ServicesStore(fixture: []), GitStore(), .services("")),
             ("02-services-live", BoardStore(fixture: ports),
              ServicesStore(fixture: groups, runs: runs, focused: focus, logs: logs,
                            logPath: ServicesStore.expectedLogPath(group: demo.name, service: "web"),
-                           notice: [ServiceRef(group: demo.name, service: "web"): "清单与运行中命令不一致"]),
+                           notice: [ServiceRef(group: demo.name, service: "web"): "清单与运行中命令不一致"],
+                           codeFacts: facts),
              GitStore(),
              .services(demo.name)),
-            ("03-services-idle", BoardStore(fixture: ports),
+            ("03-services-idle", BoardStore(fixture: ports, observation: frozenNarrowObservation()),
              ServicesStore(fixture: groups), GitStore(), .services(demo.name)),
             ("04-runtime-facts", BoardStore(fixture: ports),
-             ServicesStore(fixture: groups, runs: runs), GitStore(), .services(demo.name)),
+             ServicesStore(fixture: groups, runs: runs, codeFacts: facts), GitStore(), .services(demo.name)),
             ("05-connection-error", BoardStore(fixture: ports, problem: "连接被拒绝 —— 后台没在跑"),
              ServicesStore(fixture: groups, runs: runs), GitStore(), .services(demo.name)),
             ("09-terminal", BoardStore(fixture: ports),
@@ -280,10 +282,41 @@ enum Snapshot {
              {"name":"worker","cmd":"python3 worker.py","cwd":"/Users/you/code/berth-demo",
               "last_exit":{"code":1,"reason":"ready_timeout","at":"2026-09-24T09:40:00Z","run_id":"worker-timeout"},
               "running":false,"log_path":"/Users/you/.option-berth/logs/berth-demo/worker.log"}
+           ],
+           "machine":[
+             {"name":"redis","port":6379,"listening":true,"listening_known":true},
+             {"name":"mysql","port":3306,"listening":false,"listening_known":true,"unit":"mysql@8.0"},
+             {"name":"postgres","port":5432,"listening":false,"listening_known":false}
            ]}
         ]
         """
         return (try? JSONDecoder().decode([BerthGroup].self, from: Data(json.utf8))) ?? []
+    }
+
+    /// 冻结一屏「表覆盖不完整」：窄表 + 一个未观测的机器依赖。这一屏是
+    /// 信任缺口的图形证据 —— 不能把「没看见」画成「没听」。
+    @MainActor
+    private static func frozenNarrowObservation() -> ListenerObservation {
+        ListenerObservation(
+            state: "partial",
+            code: "observation_incomplete",
+            source: "lsof",
+            detail: "lsof: 3 行读不出来",
+            hint: "oberth doctor --only listener_observation",
+            checkedAt: "2026-09-24T09:41:20Z"
+        )
+    }
+
+    /// 一次运行的代码判定：api 跑的是旧代码，web 已核对没变。
+    @MainActor
+    private static func frozenCodeFacts(group: String) -> [ServiceRef: ServiceCodeFacts] {
+        [
+            ServiceRef(group: group, service: "api"): ServiceCodeFacts(
+                name: "api", runID: "18bfc856", codeHead: "0123456",
+                changed: true, changedFiles: 2, hint: "oberth restart --only api"),
+            ServiceRef(group: group, service: "web"): ServiceCodeFacts(
+                name: "web", runID: "6d1e4f02", changed: false),
+        ]
     }
 
     @MainActor

@@ -32,6 +32,9 @@ final class ServicesStore: ObservableObject {
     /// 未声明监听停止失败的原因，按端口行 id 存。那一行还在表上，用户要能
     /// 看见「刚点的停止没成」，而不是等下一轮刷新自己消失。
     @Published private(set) var portNotices: [String: String] = [:]
+    /// 运行中的服务跑的是不是磁盘上现在的代码。键是 (项目, 服务)，值里带
+    /// run id —— 换了运行，旧判定立刻失效，不会贴在新进程上。
+    @Published private(set) var codeFacts: [ServiceRef: ServiceCodeFacts] = [:]
     /// 正在看日志的那个服务。
     @Published private(set) var focused: ServiceRef?
     /// 那份日志的内容（保留尾部若干行）。**存的是解析过的记录**，不是原始字符串：
@@ -61,6 +64,9 @@ final class ServicesStore: ObservableObject {
 
     private let client: DaemonClient
     private let queue = DispatchQueue(label: "option-berth.services", qos: .utility)
+    /// 代码比较会读源码树，可能占用十秒。它有自己的队列：用户点停止时
+    /// 不该排在一次代码扫描后面。
+    private let codeQueue = DispatchQueue(label: "option-berth.services.code", qos: .utility)
     private let logQueue = DispatchQueue(label: "option-berth.services.log", qos: .utility)
     private let stream: DaemonStateStream?
     private var streamObserver: UUID?
@@ -68,6 +74,9 @@ final class ServicesStore: ObservableObject {
     private var inFlight = false
     private var runsInFlight = false
     private var pendingRunsRefresh = false
+    /// 正在比较代码的项目。同一项目不叠加请求；跑完若有补单再跑一轮。
+    private var codeInFlight: Set<String> = []
+    private var pendingCodeRefresh: Set<String> = []
     /// 这一轮显式刷新还没跑完时又有人要刷新 —— 跑完立刻补一轮。
     /// 长连接负责状态推送，写清单、起停服务之后仍允许显式刷新完整 RPC 结果。
     private var pendingRefresh = false
@@ -100,6 +109,7 @@ final class ServicesStore: ObservableObject {
         problem: String? = nil,
         notice: [ServiceRef: String] = [:],
         portNotices: [String: String] = [:],
+        codeFacts: [ServiceRef: ServiceCodeFacts] = [:],
         starting: Set<String> = [],
         socketPath: String = DaemonClient.defaultSocketPath()
     ) {
@@ -109,6 +119,7 @@ final class ServicesStore: ObservableObject {
         self.runs = runs
         self.focused = focused
         self.portNotices = portNotices
+        self.codeFacts = codeFacts
         // 和真跑那条路走**同一个解析器**：冻在图上的是它的输出，不是另写一套。
         self.logRecords = logs.map(LogParse.record)
         self.logPath = logPath
@@ -207,6 +218,7 @@ final class ServicesStore: ObservableObject {
                 switch outcome {
                 case .success(let snapshot):
                     self.runs = snapshot
+                    self.pruneCodeFacts()
                     self.problem = nil
                     self.updatedAt = Date()
                 case .failure(let error):
@@ -242,6 +254,7 @@ final class ServicesStore: ObservableObject {
                 case (.success(let list), .success(let snapshot)):
                     self.groups = list
                     self.runs = snapshot
+                    self.pruneCodeFacts()
                     self.problem = nil
                     self.updatedAt = Date()
                     self.claim(list)
@@ -273,6 +286,72 @@ final class ServicesStore: ObservableObject {
 
     func liveCount(in group: BerthGroup) -> Int {
         group.services.filter { live($0, in: group) != nil }.count
+    }
+
+    /// 这个服务现在那次运行的代码判定。运行换了（run id 不同）就是 nil：
+    /// 旧判定不能贴在新进程上。
+    func codeFact(_ service: BerthService, in group: BerthGroup) -> ServiceCodeFacts? {
+        let ref = ServiceRef(group: group.name, service: service.name)
+        guard let fact = codeFacts[ref],
+              let run = live(service, in: group),
+              !fact.runID.isEmpty,
+              fact.runID == run.id else { return nil }
+        return fact
+    }
+
+    /// 服务行要不要进「需处理」。清单与运行不一致、健康失败、有退出原因
+    /// 已有的判据，加上「跑的是旧代码」这条 CLI 已有的事实。
+    func needsAttention(_ service: BerthService, in group: BerthGroup) -> Bool {
+        service.needsAttention || (codeFact(service, in: group)?.isStale ?? false)
+    }
+
+    /// 需处理的分组排序。清单不一致最急；代码过期排在健康失败之后、
+    /// 普通退出之前 —— 它不影响服务现在能不能用，但确实要重启才生效。
+    func attentionRank(_ service: BerthService, in group: BerthGroup) -> Int {
+        if service.needsAttention { return service.attentionRank }
+        return (codeFact(service, in: group)?.isStale ?? false) ? 2 : 9
+    }
+
+    /// 拉这个项目的代码判定。失败按「未知」处理：老 daemon 没有这个方法，
+    /// 源码树读不出来也是未知 —— 未知不显示任何「已变/未变」的断言。
+    func refreshCodeFacts(_ group: BerthGroup) {
+        // 离屏/冻结那一份没有连接，也不该去读这台机器的源码。
+        guard stream != nil, !group.name.isEmpty else { return }
+        let name = group.name
+        guard !codeInFlight.contains(name) else {
+            pendingCodeRefresh.insert(name)
+            return
+        }
+        codeInFlight.insert(name)
+        codeQueue.async { [client] in
+            let outcome = Result { try client.codeFacts(group: name) }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.codeInFlight.remove(name)
+                if case .success(let rows) = outcome {
+                    self.applyCodeFacts(rows, group: name)
+                }
+                if self.pendingCodeRefresh.remove(name) != nil {
+                    self.refreshCodeFacts(group)
+                }
+            }
+        }
+    }
+
+    private func applyCodeFacts(_ rows: [ServiceCodeFacts], group: String) {
+        var next = codeFacts.filter { $0.key.group != group }
+        for row in rows where !row.runID.isEmpty {
+            next[ServiceRef(group: group, service: row.name)] = row
+        }
+        codeFacts = next
+    }
+
+    /// 运行注册表一换，挂在不存在的运行上的代码判定就该消失。
+    private func pruneCodeFacts() {
+        codeFacts = codeFacts.filter { entry in
+            guard let run = runs.live(group: entry.key.group, service: entry.key.service) else { return false }
+            return !entry.value.runID.isEmpty && entry.value.runID == run.id
+        }
     }
 
     /// 这个项目里**这一页停得掉**的运行。「全部停止」按它决定露不露面：
@@ -400,6 +479,7 @@ final class ServicesStore: ObservableObject {
                 self.applyStopNotices(notices, group: group, runs: targets)
                 if let afterSnapshot {
                     self.runs = afterSnapshot
+                    self.pruneCodeFacts()
                 }
                 if case .failure(let error) = after {
                     self.problem = "停完之后没能读到运行注册表：\(error.localizedDescription)"
@@ -430,6 +510,7 @@ final class ServicesStore: ObservableObject {
                 self.notice[ref] = notices[run.id]
                 if let afterSnapshot {
                     self.runs = afterSnapshot
+                    self.pruneCodeFacts()
                 }
                 if case .failure(let error) = after {
                     self.problem = "停完之后没能读到运行注册表：\(error.localizedDescription)"

@@ -389,15 +389,17 @@ struct ServicesView: View {
     }
 
     private var attentionServices: [BerthService] {
-        group.services.filter(\.needsAttention)
+        group.services.filter { store.needsAttention($0, in: group) }
             .sorted { a, b in
-                if a.attentionRank != b.attentionRank { return a.attentionRank < b.attentionRank }
+                let aRank = store.attentionRank(a, in: group)
+                let bRank = store.attentionRank(b, in: group)
+                if aRank != bRank { return aRank < bRank }
                 return a.name < b.name
             }
     }
 
     private var calmServices: [BerthService] {
-        group.services.filter { !$0.needsAttention }
+        group.services.filter { !store.needsAttention($0, in: group) }
             .sorted { a, b in
                 let aLive = store.live(a, in: group) != nil
                 let bLive = store.live(b, in: group) != nil
@@ -483,6 +485,8 @@ struct ServicesView: View {
             isFocused: store.focused == ref,
             isWorking: store.isWorking(group),
             notice: store.notice[ref],
+            code: store.codeFact(service, in: group),
+            showsHelp: scrolls,
             onFocus: {
                 store.focus(ref)
                 views?.rememberService(ref)

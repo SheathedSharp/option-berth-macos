@@ -12,8 +12,9 @@ extension ClientChecks {
     static func runtimeTrustChecks() throws {
         try machineRefChecks()
         try observationDecodeChecks()
+        try codeFactChecks()
         stopNoticeChecks()
-        print("PASS: unobserved vs not-listening, observation deltas and per-target stop results")
+        print("PASS: unobserved vs not-listening, observation deltas, code-fact join and per-target stop results")
     }
 
     private static func machineRefChecks() throws {

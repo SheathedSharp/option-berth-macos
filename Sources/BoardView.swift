@@ -488,7 +488,7 @@ struct BoardView: View {
     @ViewBuilder
     private func projectRow(_ project: BerthGroup, ordinal: Int) -> some View {
         let live = services.liveCount(in: project)
-        let attention = project.services.filter(\.needsAttention).count
+        let attention = project.services.filter { services.needsAttention($0, in: project) }.count
         HStack(spacing: Metrics.inline) {
             StatusDot(tone: attention > 0 ? Change.changed : (live > 0 ? Ink.live : Ink.dormant))
             VStack(alignment: .leading, spacing: Metrics.stack) {
@@ -579,7 +579,7 @@ struct BoardView: View {
     }
 
     private func projectContent(_ project: BerthGroup) -> some View {
-        let attention = project.services.filter(\.needsAttention).count
+        let attention = project.services.filter { services.needsAttention($0, in: project) }.count
         return ZStack(alignment: .topTrailing) {
             VStack(spacing: 0) {
                 ProjectDocumentHeader(
@@ -620,6 +620,17 @@ struct BoardView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .animation(Motion.selection(reduced: reduce), value: views.capabilityPanel)
+        // 代码比较要读源码树，不是每一拍状态刷新都值得付这个价。只在选中
+        // 这个项目时跑，服务页开着或关着都一样 —— 左栏和页头都要能看见
+        // 「跑的是旧代码」。运行换了以后旧判定按 run id 自动失效。
+        .task(id: project.name) {
+            services.refreshCodeFacts(project)
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 20_000_000_000)
+                if Task.isCancelled { break }
+                services.refreshCodeFacts(project)
+            }
+        }
     }
 
     /// 服务操作（起停、刷新）失败时的一条常驻事实。面板打开时由
