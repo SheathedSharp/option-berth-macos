@@ -207,14 +207,27 @@ struct BerthMachineRef: Decodable, Identifiable, Sendable {
     /// 那个端口上有人在听没有。声明说「我依赖它」，这里说「它在不在」——
     /// 不在就是依赖断了，而不是这个项目出了问题。
     let listening: Bool
+    /// `listening` 是不是一次真正的观察。引擎在采集器覆盖不到全部 socket
+    /// 主人时把它置 false（macOS 27 上 Go 子进程的 netstat 空表、lsof 看不到
+    /// 别人的端口），这时 `listening == false` 只表示**没看见**，不表示确定
+    /// 没在听。字段缺省（老 daemon）同样按未知处理。
+    let listeningKnown: Bool?
     /// 认到的系统服务管理器单元（认到才有）。它是「这些端口是一家人的」那个事实 ——
     /// 一条引用靠它覆盖 mysql 的 3306 与 33060。
     let unit: String?
 
     var id: String { "\(name):\(port)" }
 
+    /// 这个端口上没人在听的**事实**。表里读到一行是真的；读不到一行只有在
+    /// 采集器覆盖完整时才是否定事实。
+    var observedNotListening: Bool { !listening && listeningKnown == true }
+
+    /// 采集器覆盖不到、也没有读到这一行：不知道，而不是「没听」。
+    var listeningUnknown: Bool { !listening && listeningKnown != true }
+
     private enum CodingKeys: String, CodingKey {
         case name, port, listening, unit
+        case listeningKnown = "listening_known"
     }
 
     init(from decoder: Decoder) throws {
@@ -222,6 +235,7 @@ struct BerthMachineRef: Decodable, Identifiable, Sendable {
         name = (try? c.decode(String.self, forKey: .name)) ?? ""
         port = (try? c.decode(Int.self, forKey: .port)) ?? 0
         listening = (try? c.decode(Bool.self, forKey: .listening)) ?? false
+        listeningKnown = try? c.decodeIfPresent(Bool.self, forKey: .listeningKnown)
         unit = try? c.decodeIfPresent(String.self, forKey: .unit)
     }
 }
@@ -239,6 +253,52 @@ struct ServiceExit: Decodable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case code, reason, at
         case runID = "run_id"
+    }
+}
+
+/// `groups.code` 的一行：一次运行启动时的代码身份，和磁盘上现在的源码比较。
+///
+/// **这是 CLI `status` 已经发布的那组事实**（`code_changed_since_start`、
+/// `code_changed_files`、`code_hint`），不是客户端自己算的。`changed` 为
+/// nil 表示未知（老运行没有快照、源码读不出来、`sources:` 改过），绝不能
+/// 当成「没变」。
+struct ServiceCodeFacts: Decodable, Sendable {
+    let name: String
+    let runID: String
+    /// 这次运行启动时的 HEAD（有提交才有）。
+    let codeHead: String?
+    let changed: Bool?
+    let changedFiles: Int?
+    /// 引擎给的可直接执行的重启命令。
+    let hint: String?
+
+    var isStale: Bool { changed == true }
+
+    private enum CodingKeys: String, CodingKey {
+        case name, changed, hint
+        case runID = "run_id"
+        case codeHead = "code_head"
+        case changedFiles = "code_changed_files"
+    }
+
+    init(name: String, runID: String, codeHead: String? = nil, changed: Bool? = nil,
+         changedFiles: Int? = nil, hint: String? = nil) {
+        self.name = name
+        self.runID = runID
+        self.codeHead = codeHead
+        self.changed = changed
+        self.changedFiles = changedFiles
+        self.hint = hint
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = (try? c.decode(String.self, forKey: .name)) ?? ""
+        runID = (try? c.decode(String.self, forKey: .runID)) ?? ""
+        codeHead = try? c.decodeIfPresent(String.self, forKey: .codeHead)
+        changed = try? c.decodeIfPresent(Bool.self, forKey: .changed)
+        changedFiles = try? c.decodeIfPresent(Int.self, forKey: .changedFiles)
+        hint = try? c.decodeIfPresent(String.self, forKey: .hint)
     }
 }
 

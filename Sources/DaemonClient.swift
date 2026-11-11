@@ -61,6 +61,9 @@ struct DaemonClient: Sendable {
 
     private struct SnapshotResult: Decodable {
         let ports: [Port]
+        /// 这一轮监听表可不可信。缺省（老 daemon）当成没有这条事实：
+        /// 端口仍可用，但「表里没有」不再是「确定没在听」的凭据。
+        let observation: ListenerObservation?
     }
 
     private struct GroupsResult: Decodable {
@@ -94,6 +97,30 @@ struct DaemonClient: Sendable {
             throw Failure.malformed(error.localizedDescription)
         }
     }
+
+    /// 「跑的是不是磁盘上现在的代码」—— 和 `oberth status` 同一组事实，
+    /// 由引擎在读到请求时重算，客户端不自己算指纹。
+    ///
+    /// 老 daemon 没有这个方法：调用会失败，调用方按「未知」处理即可 ——
+    /// 未知不是「没变」。
+    func codeFacts(group: String) throws -> [ServiceCodeFacts] {
+        let data = try call("groups.code", params: ["name": group],
+                            receiveTimeout: Self.codeFactsReceiveTimeout)
+        do {
+            let envelope = try JSONDecoder().decode(Envelope<CodeResult>.self, from: data)
+            return envelope.result?.services ?? []
+        } catch {
+            throw Failure.malformed(error.localizedDescription)
+        }
+    }
+
+    private struct CodeResult: Decodable {
+        let services: [ServiceCodeFacts]
+    }
+
+    /// 代码比较要读源码树。引擎那一边最多用 10 秒，这里留出一次重扫和调度
+    /// 抖动；比普通读调用长，比停进程短。
+    static let codeFactsReceiveTimeout = 20
 
     /// 起一个项目声明的服务。
     ///
@@ -167,10 +194,9 @@ struct DaemonClient: Sendable {
         guard let outcome = (try? JSONDecoder().decode(Envelope<KillOutcome>.self, from: data))?.result else {
             throw Failure.malformed("重启前的停止结果读不懂，不继续启动，避免旧进程和新进程叠在一起。")
         }
-        if !outcome.ok {
-            let detail = outcome.results.compactMap(\.error).first { !$0.isEmpty }
-                ?? "没有停掉，引擎没说是为什么。"
-            throw Failure.malformed(detail)
+        let report = KillReport(ok: outcome.ok, rows: outcome.results)
+        if !report.failures.isEmpty {
+            throw Failure.malformed(report.summary ?? "没有停掉，引擎没说是为什么。")
         }
         try startGroup(group, only: only, onEvent: onEvent)
     }
@@ -188,9 +214,18 @@ struct DaemonClient: Sendable {
     /// 前两条和最后一条都是**按端口找人**的 —— run id 只是它用来映射端口的一个入口。
     /// 一个不占端口的服务就没有端口可映射，于是「全部停止」按下去它还活着。
     /// pid 这条路不经过端口，而运行注册表本来就给了 pid。
-    func killRun(pid: Int) throws {
-        _ = try call("ports.kill", params: ["targets": [["pid": pid]]],
-                     receiveTimeout: Self.killReceiveTimeout)
+    ///
+    /// 返回引擎的逐行结果。**一个成功的调用不等于停掉了**：行里的 `ok`
+    /// 才说这一次目标怎么了，`not_found` 表示它本来就不在（终态已成立）。
+    func killRun(pid: Int) throws -> KillReport {
+        let data = try call("ports.kill", params: ["targets": [["pid": pid]]],
+                            receiveTimeout: Self.killReceiveTimeout)
+        guard let outcome = (try? JSONDecoder().decode(Envelope<KillOutcome>.self, from: data))?.result
+        else {
+            // 读不懂不能当成功：进程可能还在，用户需要知道这一点。
+            throw Failure.malformed("停的请求发出去了，但后台回的帧读不懂，不知道停掉没有。")
+        }
+        return KillReport(ok: outcome.ok, rows: outcome.results)
     }
 
     /// 停的调用要等多久（秒）。
@@ -226,26 +261,23 @@ struct DaemonClient: Sendable {
             // 而用户刚刚被告知它没了 —— 一句「读不懂」比替引擎撒这个谎好。
             return "停的请求发出去了，但后台回的帧读不懂，不知道停掉没有。"
         }
-        if outcome.ok { return nil }
-        return outcome.results.compactMap(\.error).first { !$0.isEmpty }
-            ?? "没有停掉，引擎没说是为什么。"
+        let report = KillReport(ok: outcome.ok, rows: outcome.results)
+        if report.failures.isEmpty { return nil }
+        return report.summary
     }
 
     /// `ports.kill` 那一帧。成败都走这一个壳，靠 `ok` 分辨 —— 失败的**那一行**
     /// 才带着原因，而不是把整次调用变成一个错误。
     private struct KillOutcome: Decodable {
         let ok: Bool
-        let results: [Row]
+        let results: [KillRow]
 
-        struct Row: Decodable {
-            let error: String
+        private enum CodingKeys: String, CodingKey { case ok, results }
 
-            private enum CodingKeys: String, CodingKey { case error }
-
-            init(from decoder: Decoder) throws {
-                let c = try decoder.container(keyedBy: CodingKeys.self)
-                error = (try? c.decodeIfPresent(String.self, forKey: .error)) ?? ""
-            }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            ok = (try? c.decode(Bool.self, forKey: .ok)) ?? false
+            results = (try? c.decode([KillRow].self, forKey: .results)) ?? []
         }
     }
 
@@ -352,16 +384,21 @@ struct DaemonClient: Sendable {
         return try JSONDecoder().decode(T.self, from: data)
     }
 
-    /// 取 daemon 当前快照中的监听端口。端口是项目状态的证据，
-    /// 不是一份独立的机器清单。
-    func listPorts() throws -> [Port] {
+    /// 取 daemon 当前快照中的监听端口，连同这一轮「表可不可信」的判定。
+    /// 端口是项目状态的证据，不是一份独立的机器清单。
+    func listSnapshot() throws -> (ports: [Port], observation: ListenerObservation?) {
         let data = try call("state.snapshot", params: [:])
         do {
             let envelope = try JSONDecoder().decode(Envelope<SnapshotResult>.self, from: data)
-            return envelope.result?.ports ?? []
+            return (envelope.result?.ports ?? [], envelope.result?.observation)
         } catch {
             throw Failure.malformed(error.localizedDescription)
         }
+    }
+
+    /// 只要端口的那条路（探针等）。判定用 `listSnapshot` 拿。
+    func listPorts() throws -> [Port] {
+        try listSnapshot().ports
     }
 
     /// 发一条 JSON-RPC，返回它那一帧。
@@ -518,6 +555,58 @@ struct DaemonClient: Sendable {
     }
 }
 
+/// 一次停止里的一行结果：引擎对某个目标做了什么。`code == "not_found"` 表示
+/// 目标本来就不在 —— 用户要的终态已经成立，不算失败（和 CLI `reportKill`
+/// 同一条规则）。
+struct KillRow: Decodable, Sendable {
+    let ok: Bool
+    let error: String
+    let code: String
+    let pid: Int
+    let name: String
+
+    var alreadyGone: Bool { code == "not_found" }
+    var failed: Bool { !ok && !alreadyGone }
+
+    private enum CodingKeys: String, CodingKey { case ok, error, code, pid, name }
+
+    init(ok: Bool, error: String = "", code: String = "", pid: Int = 0, name: String = "") {
+        self.ok = ok
+        self.error = error
+        self.code = code
+        self.pid = pid
+        self.name = name
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        ok = (try? c.decode(Bool.self, forKey: .ok)) ?? false
+        error = (try? c.decode(String.self, forKey: .error)) ?? ""
+        code = (try? c.decode(String.self, forKey: .code)) ?? ""
+        pid = (try? c.decode(Int.self, forKey: .pid)) ?? 0
+        name = (try? c.decode(String.self, forKey: .name)) ?? ""
+    }
+}
+
+/// 一次停止的全部逐行结果。`ok` 是整次调用的结论，但要给用户看的是**哪一项
+/// 没停掉、为什么**，所以调用方读 `failures`，不读 `ok`。
+struct KillReport: Sendable {
+    let ok: Bool
+    let rows: [KillRow]
+
+    var failures: [KillRow] { rows.filter(\.failed) }
+
+    /// 一句可直接给用户看的话；没有失败时为 nil。
+    var summary: String? {
+        guard !failures.isEmpty else { return nil }
+        let messages = failures.map { row -> String in
+            let detail = row.error.isEmpty ? "引擎没说原因" : row.error
+            return row.name.isEmpty ? detail : "\(row.name)：\(detail)"
+        }
+        return "没有停掉：\(messages.joined(separator: "；"))"
+    }
+}
+
 /// The wire shape of a state subscription. `groups` intentionally decodes to
 /// the same client model as `groups.list`: the daemon publishes one canonical
 /// group representation, and the client only renders it.
@@ -526,14 +615,18 @@ struct DaemonStateSnapshot: Decodable, Sendable {
     let at: String
     let ports: [Port]
     let groups: [BerthGroup]
+    /// 首帧里的监听表判定。nil 表示主采集器完整作答（或老 daemon 没有这条）。
+    let observation: ListenerObservation?
 
-    private enum CodingKeys: String, CodingKey { case seq, at, ports, groups }
+    private enum CodingKeys: String, CodingKey { case seq, at, ports, groups, observation }
 
-    init(seq: UInt64, at: String, ports: [Port], groups: [BerthGroup]) {
+    init(seq: UInt64, at: String, ports: [Port], groups: [BerthGroup],
+         observation: ListenerObservation? = nil) {
         self.seq = seq
         self.at = at
         self.ports = ports
         self.groups = groups
+        self.observation = observation
     }
 
     init(from decoder: Decoder) throws {
@@ -542,6 +635,7 @@ struct DaemonStateSnapshot: Decodable, Sendable {
         at = try c.decode(String.self, forKey: .at)
         ports = try c.decodeIfPresent([Port].self, forKey: .ports) ?? []
         groups = try c.decodeIfPresent([BerthGroup].self, forKey: .groups) ?? []
+        observation = try? c.decodeIfPresent(ListenerObservation.self, forKey: .observation)
     }
 }
 
@@ -565,8 +659,13 @@ struct DaemonStateDelta: Decodable {
     let at: String
     let ports: DaemonStateChange<Port>
     let groups: DaemonStateChange<BerthGroup>
+    /// 这一帧之后的监听表判定；**显式 null 表示主采集器完整作答**。
+    let observation: ListenerObservation?
+    /// 帧里到底有没有 observation 字段。老 daemon 不发送它 —— 那表示
+    /// 「没有新判定」，不是「判定变成了空」。
+    let observationPresent: Bool
 
-    private enum CodingKeys: String, CodingKey { case seq, at, ports, groups }
+    private enum CodingKeys: String, CodingKey { case seq, at, ports, groups, observation }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -574,6 +673,10 @@ struct DaemonStateDelta: Decodable {
         at = try c.decode(String.self, forKey: .at)
         ports = try c.decode(DaemonStateChange<Port>.self, forKey: .ports)
         groups = try c.decode(DaemonStateChange<BerthGroup>.self, forKey: .groups)
+        observationPresent = c.contains(.observation)
+        observation = observationPresent
+            ? (try? c.decodeIfPresent(ListenerObservation.self, forKey: .observation))
+            : nil
     }
 }
 
@@ -697,7 +800,8 @@ final class DaemonStateStream {
             cached = DaemonStateSnapshot(
                 seq: delta.seq, at: delta.at,
                 ports: applyDaemonChange(delta.ports, to: snapshot.ports, key: \.id),
-                groups: applyDaemonChange(delta.groups, to: snapshot.groups, key: \.name))
+                groups: applyDaemonChange(delta.groups, to: snapshot.groups, key: \.name),
+                observation: delta.observationPresent ? delta.observation : snapshot.observation)
             lastError = nil
             for observer in Array(observers.values) { observer.delta(delta) }
         case .failure(let error):

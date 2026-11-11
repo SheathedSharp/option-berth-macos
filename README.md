@@ -96,7 +96,10 @@ BERTH_PROBE_ADOPT 仅在明确需要端到端起停或采纳清单时设置；�
 ## 数据来源
 
 DaemonClient 通过 `state.subscribe` 长连接接收首帧快照和端口 / 项目增量；显式刷新仍读取
-`state.snapshot`。其它调用是 groups.config.get、groups.start、groups.kill 和 ports.logs。
+`state.snapshot`。其它调用是 groups.config.get、groups.start、groups.kill、groups.code 和
+ports.logs。`groups.code` 读运行中服务的代码判定（和 `oberth status` 的
+`code_changed_since_start` 同一组字段），选中项目时每 20 秒刷新；客户端按 run id 贴合到当前
+运行，未知不冒充没变。
 Git 面板调用 `oberth git --json`、`oberth git files --json`、按需的
 `oberth git diff --json`，以及 History 模式下的 `oberth git graph --json` 和
 `oberth git diff --commit --json`。行号只从返回的 hunk 头推算。History 的车道采用
