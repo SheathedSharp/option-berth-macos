@@ -155,6 +155,9 @@ CFFIXED_USER_HOME、BERTH_HOME 和合成命令，在固定 600×440 的自有 NS
 原生按键保留、递归窗格/焦点/分隔、同一 PTY 独立窗口归还、恢复确认与显式新 Shell，以及
 更新请求的代际/取消/错误隔离。更新测试用可控异步载入器，不发起联网查询。工作区导航检查
 保留 `project:` / `ports:` 旧参数兼容，但统一映射到服务页，不保留重复内部页面分支。
+`RuntimeTrustChecks` 与 `CodeFactChecks` 另用解码样本和 store 夹具验证：`listening_known`
+缺省/为假时不把未知说成没听、`state.delta` 的 observation 显式 null 与缺失不同、停止逐行结果
+在通知失败与复核仍在运行时都不算成功，以及代码判定只贴在同一 run id 上。
 
 命令块元数据仅在协议状态改变时发布；普通终端输出不再逐块比较整个历史数组。
 `TerminalChecks` 重跑工作区移除、混合窗格关闭、24次PTY回收和原生输入；旧双栏状态已移除，
