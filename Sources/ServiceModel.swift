@@ -207,14 +207,27 @@ struct BerthMachineRef: Decodable, Identifiable, Sendable {
     /// 那个端口上有人在听没有。声明说「我依赖它」，这里说「它在不在」——
     /// 不在就是依赖断了，而不是这个项目出了问题。
     let listening: Bool
+    /// `listening` 是不是一次真正的观察。引擎在采集器覆盖不到全部 socket
+    /// 主人时把它置 false（macOS 27 上 Go 子进程的 netstat 空表、lsof 看不到
+    /// 别人的端口），这时 `listening == false` 只表示**没看见**，不表示确定
+    /// 没在听。字段缺省（老 daemon）同样按未知处理。
+    let listeningKnown: Bool?
     /// 认到的系统服务管理器单元（认到才有）。它是「这些端口是一家人的」那个事实 ——
     /// 一条引用靠它覆盖 mysql 的 3306 与 33060。
     let unit: String?
 
     var id: String { "\(name):\(port)" }
 
+    /// 这个端口上没人在听的**事实**。表里读到一行是真的；读不到一行只有在
+    /// 采集器覆盖完整时才是否定事实。
+    var observedNotListening: Bool { !listening && listeningKnown == true }
+
+    /// 采集器覆盖不到、也没有读到这一行：不知道，而不是「没听」。
+    var listeningUnknown: Bool { !listening && listeningKnown != true }
+
     private enum CodingKeys: String, CodingKey {
         case name, port, listening, unit
+        case listeningKnown = "listening_known"
     }
 
     init(from decoder: Decoder) throws {
@@ -222,6 +235,7 @@ struct BerthMachineRef: Decodable, Identifiable, Sendable {
         name = (try? c.decode(String.self, forKey: .name)) ?? ""
         port = (try? c.decode(Int.self, forKey: .port)) ?? 0
         listening = (try? c.decode(Bool.self, forKey: .listening)) ?? false
+        listeningKnown = try? c.decodeIfPresent(Bool.self, forKey: .listeningKnown)
         unit = try? c.decodeIfPresent(String.self, forKey: .unit)
     }
 }

@@ -29,6 +29,9 @@ final class ServicesStore: ObservableObject {
     /// 每个服务最近一次操作的反馈（pid、跳过的原因、失败的原因）。
     /// 操作完就消失，不是常驻状态 —— 常驻的是运行注册表。
     @Published private(set) var notice: [ServiceRef: String] = [:]
+    /// 未声明监听停止失败的原因，按端口行 id 存。那一行还在表上，用户要能
+    /// 看见「刚点的停止没成」，而不是等下一轮刷新自己消失。
+    @Published private(set) var portNotices: [String: String] = [:]
     /// 正在看日志的那个服务。
     @Published private(set) var focused: ServiceRef?
     /// 那份日志的内容（保留尾部若干行）。**存的是解析过的记录**，不是原始字符串：
@@ -96,6 +99,7 @@ final class ServicesStore: ObservableObject {
         findOpen: Bool = false,
         problem: String? = nil,
         notice: [ServiceRef: String] = [:],
+        portNotices: [String: String] = [:],
         starting: Set<String> = [],
         socketPath: String = DaemonClient.defaultSocketPath()
     ) {
@@ -104,6 +108,7 @@ final class ServicesStore: ObservableObject {
         self.groups = groups
         self.runs = runs
         self.focused = focused
+        self.portNotices = portNotices
         // 和真跑那条路走**同一个解析器**：冻在图上的是它的输出，不是另写一套。
         self.logRecords = logs.map(LogParse.record)
         self.logPath = logPath
@@ -375,26 +380,29 @@ final class ServicesStore: ObservableObject {
     /// 那一行的「停止」（那是点名要停）。
     func stop(_ group: BerthGroup) {
         guard !starting.contains(group.name) else { return }
-        let pids = stoppableRuns(in: group).map(\.pid)
-        guard !pids.isEmpty else { return }
+        let targets = stoppableRuns(in: group)
+        guard !targets.isEmpty else { return }
         starting.insert(group.name)
         let name = group.name
         queue.async { [client] in
-            var failure: Error?
-            for pid in pids {
-                do {
-                    try client.killRun(pid: pid)
-                } catch {
-                    failure = error
-                }
+            var outcomes: [(RunRecord, Result<KillReport, Error>)] = []
+            for run in targets {
+                outcomes.append((run, Result { try client.killRun(pid: run.pid) }))
             }
+            // 信号发出去了不代表进程退出了。停完立刻读一次运行注册表：
+            // 还在的，就是还在 —— 界面上要这么说。
+            let after = Result { try client.listRuns() }
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.starting.remove(name)
-                if let failure {
-                    self.problem = failure.localizedDescription
-                } else {
-                    self.notice = self.notice.filter { $0.key.group != name }
+                let afterSnapshot = try? after.get()
+                let notices = Self.stopNotices(outcomes: outcomes, after: afterSnapshot)
+                self.applyStopNotices(notices, group: group, runs: targets)
+                if let afterSnapshot {
+                    self.runs = afterSnapshot
+                }
+                if case .failure(let error) = after {
+                    self.problem = "停完之后没能读到运行注册表：\(error.localizedDescription)"
                 }
                 self.refresh()
             }
@@ -404,23 +412,80 @@ final class ServicesStore: ObservableObject {
     /// 停一个服务。按运行注册表里的 pid 停 —— 见 `DaemonClient.killRun` 那张表，
     /// 按端口和 run id 都停不到不占端口的服务。
     func stop(_ service: BerthService, in group: BerthGroup) {
-        guard let run = live(service, in: group) else { return }
         let ref = ServiceRef(group: group.name, service: service.name)
+        guard let run = live(service, in: group) else {
+            // 注册表里已经没有这次运行了：这就是用户要的终态，不要让一句
+            // 过期的「正在停…」留在行上。
+            notice[ref] = nil
+            return
+        }
         notice[ref] = "正在停…"
         queue.async { [client] in
-            let outcome = Result { try client.killRun(pid: run.pid) }
+            let result = Result { try client.killRun(pid: run.pid) }
+            let after = Result { try client.listRuns() }
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                switch outcome {
-                case .success:
-                    self.notice[ref] = nil
-                    // 正在看的这个被停掉了：日志留着（那是它说过的话），
-                    // 只是不再跟着读了。
-                    self.refresh()
-                case .failure(let error):
-                    self.notice[ref] = error.localizedDescription
+                let afterSnapshot = try? after.get()
+                let notices = Self.stopNotices(outcomes: [(run, result)], after: afterSnapshot)
+                self.notice[ref] = notices[run.id]
+                if let afterSnapshot {
+                    self.runs = afterSnapshot
+                }
+                if case .failure(let error) = after {
+                    self.problem = "停完之后没能读到运行注册表：\(error.localizedDescription)"
+                }
+                // 正在看的这个被停掉了：日志留着（那是它说过的话），
+                // 只是不再跟着读了。
+                self.refresh()
+            }
+        }
+    }
+
+    /// 停止的结果是**逐行**的：一行成功不代表整批成功，一个信号发出去了
+    /// 也不代表进程退出了。返回每个 run id 该说的那句话；没有条目表示
+    /// 复核过、确实停了（或本来就不在）。
+    ///
+    /// 纯函数，单独测：这是「点完停止到底停没停」的唯一判据。
+    nonisolated static func stopNotices(
+        outcomes: [(RunRecord, Result<KillReport, Error>)],
+        after: RunsSnapshot?
+    ) -> [String: String] {
+        var notices: [String: String] = [:]
+        for (run, result) in outcomes {
+            switch result {
+            case .failure(let error):
+                notices[run.id] = "没有停掉：\(error.localizedDescription)"
+            case .success(let report):
+                if let failure = report.failures.first {
+                    let detail = failure.error.isEmpty ? "引擎没说原因" : failure.error
+                    notices[run.id] = "没有停掉：\(detail)"
+                } else if let after {
+                    if after.runs.contains(where: { $0.id == run.id }) {
+                        notices[run.id] = "停止信号已发出，但这个运行仍在注册表里（pid \(run.pid)）"
+                    }
+                } else {
+                    // 没有复核证据：不能把「信号发出去了」当成「已经退了」。
+                    notices[run.id] = "停止信号已发出，但没能复核进程是否退出"
                 }
             }
+        }
+        return notices
+    }
+
+    /// 把逐行结果贴回服务行。认不出服务名的运行（`runs.spawn` 起的）
+    /// 没有行可贴，汇总成顶部的一条事实，不能丢。
+    private func applyStopNotices(_ notices: [String: String], group: BerthGroup,
+                                  runs: [RunRecord]) {
+        var unclaimed: [String] = []
+        for run in runs {
+            guard let service = group.services.first(where: { $0.name == run.name }) else {
+                if let message = notices[run.id] { unclaimed.append("pid \(run.pid)：\(message)") }
+                continue
+            }
+            notice[ServiceRef(group: group.name, service: service.name)] = notices[run.id]
+        }
+        if !unclaimed.isEmpty {
+            problem = unclaimed.joined(separator: "；")
         }
     }
 
@@ -434,24 +499,32 @@ final class ServicesStore: ObservableObject {
     /// 运行注册表里没有它们。所以它走端口，不走 pid（见 `DaemonClient.killPort`），
     /// 也不动运行注册表：停掉了没有任何记录要清，等下一轮刷新那一行自己就不见了。
     ///
-    /// `done` 两条路都会回：成功回 nil，出错回一句话说给用户听。成功那条路
-    /// 不该打扰 —— 那一行下一秒就从表上消失，再弹一个「已停止」是替用户说他刚看见的事。
-    func kill(_ port: Port, done: @escaping (String?) -> Void) {
+    /// 失败就贴回那一行：`portNotices[port.id]`。成功不打扰 —— 那一行下一秒
+    /// 就从表上消失，再弹一个「已停止」是替用户说他刚看见的事。
+    func kill(_ port: Port) {
+        let id = port.id
         queue.async { [client] in
             let outcome = Result { try client.killPort(port: port.port, bindAddress: port.bindAddress) }
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 switch outcome {
                 case .success(let reason):
-                    done(reason)
+                    self.portNotices[id] = reason
                     // 引擎在杀完那次调用里已经重新扫过了，所以这一次刷新拿到的是
                     // 已经没有了那一行的快照 —— 不用等 2 秒那一轮。
                     self.refresh()
                 case .failure(let error):
-                    done(error.localizedDescription)
+                    self.portNotices[id] = error.localizedDescription
                 }
             }
         }
+    }
+
+    /// 端口从表上消失后，它的停止失败原因也没有意义了。表在视图那一侧
+    /// （`BoardStore.ports`），由服务页把当前 id 集合交回来。
+    func prunePortNotices(keeping ids: Set<String>) {
+        guard !portNotices.isEmpty else { return }
+        portNotices = portNotices.filter { ids.contains($0.key) }
     }
 
     // MARK: - 日志

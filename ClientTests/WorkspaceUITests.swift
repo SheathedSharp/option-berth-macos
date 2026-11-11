@@ -34,6 +34,7 @@ enum ClientChecks {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory); app.finishLaunching()
         quitReadinessChecks()
+        try runtimeTrustChecks()
         try shortcutChecks()
         try windowChecks()
         paletteChecks()

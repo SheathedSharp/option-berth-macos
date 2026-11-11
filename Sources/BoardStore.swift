@@ -7,6 +7,9 @@ import Foundation
 @MainActor
 final class BoardStore: ObservableObject {
     @Published private(set) var ports: [Port] = []
+    /// 这一轮监听表可不可信。nil 表示主采集器完整作答（或老 daemon 没有
+    /// 这条事实）；非 nil 且 `isTrusted == false` 时，**表里没有不等于没在听**。
+    @Published private(set) var observation: ListenerObservation?
     @Published private(set) var problem: String?
     @Published private(set) var updatedAt: Date?
     /// 正在把 daemon 拉起来的这一段。界面要能说「稍等」而不是「连不上」。
@@ -33,6 +36,7 @@ final class BoardStore: ObservableObject {
     /// 而那几屏恰恰是最容易做坏、也最少被人看到的。
     init(
         fixture ports: [Port],
+        observation: ListenerObservation? = nil,
         problem: String? = nil,
         starting: Bool = false,
         socketPath: String = DaemonClient.defaultSocketPath()
@@ -40,6 +44,7 @@ final class BoardStore: ObservableObject {
         client = DaemonClient(socketPath: socketPath)
         stream = nil
         self.ports = ports
+        self.observation = observation
         self.problem = problem
         self.starting = starting
         self.updatedAt = Date()
@@ -78,6 +83,7 @@ final class BoardStore: ObservableObject {
 
     private func absorb(_ snapshot: DaemonStateSnapshot) {
         ports = snapshot.ports
+        observation = snapshot.observation
         problem = nil
         starting = false
         updatedAt = Date()
@@ -85,6 +91,9 @@ final class BoardStore: ObservableObject {
 
     private func absorb(_ delta: DaemonStateDelta) {
         ports = applyDaemonChange(delta.ports, to: ports, key: \.id)
+        // 只有帧里带了判定才更新：老 daemon 不发这个字段，缺失表示「没有新
+        // 判定」，不是「判定变空了」。
+        if delta.observationPresent { observation = delta.observation }
         problem = nil
         starting = false
         updatedAt = Date()
@@ -121,7 +130,7 @@ final class BoardStore: ObservableObject {
         guard !inFlight else { return }
         inFlight = true
         queue.async { [client] in
-            let outcome = Result { try client.listPorts() }
+            let outcome = Result { try client.listSnapshot() }
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 if case .failure = outcome, !self.launchAttempted {
@@ -149,8 +158,9 @@ final class BoardStore: ObservableObject {
                     return
                 }
                 switch outcome {
-                case .success(let list):
-                    self.ports = list
+                case .success(let snapshot):
+                    self.ports = snapshot.ports
+                    self.observation = snapshot.observation
                     self.problem = nil
                     self.updatedAt = Date()
                 case .failure(let error):

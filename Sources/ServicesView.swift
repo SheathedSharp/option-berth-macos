@@ -14,6 +14,9 @@ struct ServicesView: View {
     let group: BerthGroup
     /// 当前 worktree 的监听实况；正常监听显示在对应服务行，未声明的监听显示在页尾。
     let ports: [Port]
+    /// 这一轮监听表可不可信。nil 表示主采集器完整作答。不可信时，
+    /// 「表里没有」只能在界面上说成未知，不能说成没在听。
+    var observation: ListenerObservation? = nil
     /// `ImageRenderer` 画不出 `ScrollView` 里的东西。
     var scrolls: Bool = true
     /// Shared workbench focus bus (ops-workbench v12). Optional so freezes
@@ -101,6 +104,10 @@ struct ServicesView: View {
         .onAppear {
             normalizeDetailWidth()
             syncFocusToProject()
+            store.prunePortNotices(keeping: Set(ports.map(\.id)))
+        }
+        .onChange(of: ports.map(\.id)) { _, ids in
+            store.prunePortNotices(keeping: Set(ids))
         }
         // ⌘F（菜单那一项）按下的那一下：露出查找栏、把光标送进框里、按停跟随。
         .onChange(of: store.logFindRequest) { _, _ in beginFind() }
@@ -139,10 +146,20 @@ struct ServicesView: View {
     /// reading surface on the right so opening it never squeezes the service rows.
     private var servicePanel: some View {
         VStack(spacing: 0) {
+            if let problem = store.problem {
+                problemBanner(problem)
+            }
             // Ops-workbench v12: attention-first instrument — not declaration order.
             servicesInstrument
                 .padding(.horizontal, Metrics.gutter)
                 .padding(.top, Metrics.gutter)
+            // 采集器自己说覆盖不完整时，把它说出来。没有这一条，空表会被
+            // 读成「没有端口」，而引擎的意思是「不知道」。
+            if let observation, !observation.isTrusted {
+                observationNote(observation)
+                    .padding(.horizontal, Metrics.gutter)
+                    .padding(.top, Metrics.gutter)
+            }
             // Undeclared listeners sit with Attention evidence (above calm machine deps).
             if !unclaimedPorts.isEmpty {
                 insetGroup(
@@ -192,6 +209,71 @@ struct ServicesView: View {
                 .strokeBorder(Ink.lineStrong, lineWidth: 1)
         )
         .shadow(color: Ink.ink.opacity(0.045), radius: 8, x: 0, y: 2)
+    }
+
+    /// 服务操作失败（拉取、停止、启动）不再只写进 store：那一段以前没有人读，
+    /// 用户点完停止看不到任何失败。这里把它放在服务页最上面。
+    private func problemBanner(_ problem: String) -> some View {
+        HStack(alignment: .top, spacing: Metrics.inline) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 11, weight: .semibold))
+            Text(problem)
+                .font(Face.sans(Metrics.chrome))
+                .textSelection(.enabled)
+                .lineLimit(3)
+            Spacer(minLength: 0)
+            Button("重试") { store.refresh() }
+                .disabled(!scrolls)
+        }
+        .foregroundStyle(Change.changed)
+        .padding(.horizontal, Metrics.gutter)
+        .padding(.vertical, Metrics.controlPadV)
+        .background(Change.changedBand)
+        .overlay(alignment: .bottom) { Hairline(tone: Ink.lineStrong) }
+    }
+
+    /// 「观察不到」和「确定没有」是两件事。引擎已经把它们分开了，这里把
+    /// 判定念出来，而不是让一张空表自己暗示「没有端口」。
+    private func observationNote(_ observation: ListenerObservation) -> some View {
+        let title = observation.isBlind ? "看不到监听表" : "监听表覆盖不完整"
+        let detail: String = {
+            if observation.isBlind {
+                return "端口和归属未知，不能读成「没在听」"
+            }
+            if !observation.source.isEmpty {
+                return "\(observation.source) 看不到的端口是未知，不是空着"
+            }
+            return "没读到的行是未知，不是没在听"
+        }()
+        return HStack(alignment: .top, spacing: Metrics.inline) {
+            Image(systemName: "eye.slash")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Ink.inkMuted)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(Face.sans(Metrics.chrome, .semibold))
+                    .foregroundStyle(Ink.ink)
+                Text((observation.detail.isEmpty ? detail : detail + " · " + observation.detail))
+                    .font(Face.sans(Metrics.caption))
+                    .foregroundStyle(Ink.inkMuted)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 0)
+            if !observation.hint.isEmpty {
+                Text(observation.hint)
+                    .font(Face.mono(Metrics.meta))
+                    .foregroundStyle(Ink.inkFaint)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, Metrics.gutter)
+        .padding(.vertical, Metrics.controlPadV + 2)
+        .background(Ink.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .strokeBorder(Ink.lineStrong, lineWidth: 1)
+        )
+        .help([observation.detail, observation.hint].filter { !$0.isEmpty }.joined(separator: "\n"))
     }
 
     /// Inset grouped disclosure — quieter chrome than a second full table header.
@@ -422,12 +504,12 @@ struct ServicesView: View {
         VStack(spacing: 0) {
             ForEach(group.machine) { ref in
                 HStack(spacing: Col.spacing) {
-                    StatusDot(tone: ref.listening ? Ink.live : Ink.dormant)
+                    StatusDot(tone: ref.listening ? Ink.live : (ref.listeningUnknown ? Ink.inkFaint : Ink.dormant))
                         .frame(width: Col.dot, alignment: .leading)
 
                     Text(ref.name)
                         .font(Face.sans(Metrics.row, .medium))
-                        .foregroundStyle(ref.listening ? Ink.ink : Ink.inkMuted)
+                        .foregroundStyle(ref.listening ? Ink.ink : (ref.listeningUnknown ? Ink.inkFaint : Ink.inkMuted))
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .frame(width: Col.name, alignment: .leading)
@@ -450,6 +532,12 @@ struct ServicesView: View {
                     Group {
                         if ref.listening {
                             Tag(text: "在听")
+                        } else if ref.listeningUnknown {
+                            // 表里没有这一行，而采集器覆盖不到它的主人。
+                            // 这是**未观测**，不是「没听」—— 不能替引擎把
+                            // 未知说成否定。
+                            Tag(text: "未观测", tone: .quiet)
+                                .help("引擎没有确认看得见这个端口的主人；没看见不等于没在听")
                         } else {
                             // 没听不是错误，是**依赖断了**：清单说要它，机器上没有。
                             // 所以用琥珀那枚（和「废纸篓残留」同档），不用红色。
@@ -498,15 +586,27 @@ struct ServicesView: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .frame(width: Col.process, alignment: .leading)
-                    Text(port.bindAddress)
-                        .font(Face.mono(Metrics.meta))
-                        .foregroundStyle(Ink.inkFaint)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .layoutPriority(1)
-                        .frame(width: Col.port, alignment: .leading)
+                    if let failure = store.portNotices[port.id] {
+                        // 停止失败也要留在这一行上：进程还在，用户得知道。
+                        Text(failure)
+                            .font(Face.sans(Metrics.meta))
+                            .foregroundStyle(Change.changed)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .help(failure)
+                            .layoutPriority(1)
+                            .frame(width: Col.port, alignment: .leading)
+                    } else {
+                        Text(port.bindAddress)
+                            .font(Face.mono(Metrics.meta))
+                            .foregroundStyle(Ink.inkFaint)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .layoutPriority(1)
+                            .frame(width: Col.port, alignment: .leading)
+                    }
                     RowAction(title: "停止") {
-                        store.kill(port) { _ in }
+                        store.kill(port)
                     }
                     .frame(width: Col.action, alignment: .trailing)
                 }

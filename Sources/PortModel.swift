@@ -59,3 +59,53 @@ struct Port: Decodable, Identifiable, Sendable {
         try? c.decodeIfPresent(String.self, forKey: key)
     }
 }
+
+/// 这一轮监听表能不能被相信。引擎在 `state.snapshot` 和首帧订阅里发布它；
+/// `blind` / `bind_denied` / `partial` / 非主采集器（`source` 非空）都意味着
+/// **表里没有的端口是未知**，不是空着。
+struct ListenerObservation: Decodable, Sendable, Equatable {
+    let state: String
+    let code: String
+    /// 非主采集器（Darwin 上的 `lsof`）。非空即窄表：看不到别的用户的 socket。
+    let source: String
+    let detail: String
+    let hint: String
+    let checkedAt: String
+
+    /// 完整、可信的一次观察。
+    var isTrusted: Bool { state == "observable" && source.isEmpty }
+
+    /// 表还在，但覆盖不完整（窄表或部分行读不出来）。
+    var isPartial: Bool {
+        if source.isEmpty == false { return true }
+        return state == "partial"
+    }
+
+    /// 完全看不到监听表。
+    var isBlind: Bool { state == "blind" || state == "bind_denied" }
+
+    private enum CodingKeys: String, CodingKey {
+        case state, code, source, detail, hint
+        case checkedAt = "checked_at"
+    }
+
+    init(state: String, code: String = "", source: String = "", detail: String = "",
+         hint: String = "", checkedAt: String = "") {
+        self.state = state
+        self.code = code
+        self.source = source
+        self.detail = detail
+        self.hint = hint
+        self.checkedAt = checkedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        state = (try? c.decode(String.self, forKey: .state)) ?? ""
+        code = (try? c.decode(String.self, forKey: .code)) ?? ""
+        source = (try? c.decode(String.self, forKey: .source)) ?? ""
+        detail = (try? c.decode(String.self, forKey: .detail)) ?? ""
+        hint = (try? c.decode(String.self, forKey: .hint)) ?? ""
+        checkedAt = (try? c.decode(String.self, forKey: .checkedAt)) ?? ""
+    }
+}

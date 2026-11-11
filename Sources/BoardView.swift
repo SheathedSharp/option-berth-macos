@@ -595,6 +595,12 @@ struct BoardView: View {
                     projectMenu(project)
                 }
 
+                // 项目菜单里的「停止项目服务」不打开服务页，失败必须在这里
+                // 也能看见 —— store 记录了它，但以前没有任何视图读这一段。
+                if let problem = services.problem {
+                    servicesProblemBar(problem)
+                }
+
                 // Session stage is always home (v13). Services/Git are overlays.
                 WorkspaceConsole(
                     root: project.rootDir ?? "",
@@ -614,6 +620,28 @@ struct BoardView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .animation(Motion.selection(reduced: reduce), value: views.capabilityPanel)
+    }
+
+    /// 服务操作（起停、刷新）失败时的一条常驻事实。面板打开时由
+    /// `ServicesView` 自己念；关着时这里念 —— 两处不会同时可见。
+    private func servicesProblemBar(_ problem: String) -> some View {
+        HStack(alignment: .top, spacing: Metrics.inline) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 11, weight: .semibold))
+            Text(problem)
+                .font(Face.sans(Metrics.chrome))
+                .lineLimit(2)
+                .textSelection(.enabled)
+            Spacer(minLength: 0)
+            if scrolls {
+                Button("重试") { services.refresh() }
+            }
+        }
+        .foregroundStyle(Change.changed)
+        .padding(.horizontal, Metrics.gutter)
+        .padding(.vertical, Metrics.controlPadV)
+        .background(Change.changedBand)
+        .overlay(alignment: .bottom) { Hairline(tone: Ink.lineStrong) }
     }
 
     @ViewBuilder
@@ -660,6 +688,7 @@ struct BoardView: View {
                         store: services,
                         group: project,
                         ports: ports(for: project),
+                        observation: store.observation,
                         scrolls: scrolls,
                         views: views,
                         onJumpToGit: { path in
